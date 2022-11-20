@@ -157,6 +157,7 @@ pub fn generate_stub_lib(input_path: &Path, triple: &Triple) -> std::io::Result<
         };
 
         let stub_dll_symbols = make_stub_dll_symbols(exposed_to_host, exported_closure_types);
+        dbg!(&stub_dll_symbols);
         generate_dynamic_lib(triple, &stub_dll_symbols, &stub_lib);
     } else {
         unreachable!();
