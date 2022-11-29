@@ -14,6 +14,8 @@ pub struct CallStack<'a> {
     return_addrs_and_block_depths: Vec<'a, (u32, u32)>,
     /// frame offsets into the `locals`, `is_float`, and `is_64` vectors (one entry per frame)
     frame_offsets: Vec<'a, u32>,
+    /// base size of the value stack before executing (one entry per frame)
+    value_stack_bases: Vec<'a, u32>,
     /// binary data for local variables (one entry per local)
     locals_data: Vec<'a, u64>,
     /// int/float type info (one entry per local)
@@ -37,6 +39,7 @@ impl<'a> CallStack<'a> {
         CallStack {
             return_addrs_and_block_depths: Vec::with_capacity_in(256, arena),
             frame_offsets: Vec::with_capacity_in(256, arena),
+            value_stack_bases: Vec::with_capacity_in(256, arena),
             locals_data: Vec::with_capacity_in(16 * 256, arena),
             is_float: BitVec::with_capacity(256),
             is_64: BitVec::with_capacity(256),
@@ -48,7 +51,7 @@ impl<'a> CallStack<'a> {
         &mut self,
         return_addr: u32,
         return_block_depth: u32,
-        n_args: u32,
+        arg_type_bytes: &[u8],
         value_stack: &mut ValueStack<'a>,
         code_bytes: &[u8],
         pc: &mut usize,
@@ -60,15 +63,19 @@ impl<'a> CallStack<'a> {
         let mut total = 0;
 
         // Make space for arguments
-        self.is_64.extend(repeat(false).take(n_args as usize));
-        self.is_float.extend(repeat(false).take(n_args as usize));
-        self.locals_data.extend(repeat(0).take(n_args as usize));
+        let n_args = arg_type_bytes.len();
+        self.is_64.extend(repeat(false).take(n_args));
+        self.is_float.extend(repeat(false).take(n_args));
+        self.locals_data.extend(repeat(0).take(n_args));
 
         // Pop arguments off the value stack and into locals
-        for i in (0..n_args).rev() {
+        for (i, type_byte) in arg_type_bytes.iter().copied().enumerate().rev() {
             let arg = value_stack.pop();
-            self.set_local_help(i, arg);
+            assert_eq!(ValueType::from(arg), ValueType::from(type_byte));
+            self.set_local_help(i as u32, arg);
         }
+
+        self.value_stack_bases.push(value_stack.len() as u32);
 
         // Parse local variable declarations in the function header. They're grouped by type.
         let local_group_count = u32::parse((), code_bytes, pc).unwrap();
@@ -87,6 +94,7 @@ impl<'a> CallStack<'a> {
     /// On returning from a Wasm call, drop its locals and retrieve the return address
     pub fn pop_frame(&mut self) -> Option<(u32, u32)> {
         let frame_offset = self.frame_offsets.pop()? as usize;
+        self.value_stack_bases.pop()?;
         self.locals_data.truncate(frame_offset);
         self.is_64.truncate(frame_offset);
         self.is_64.truncate(frame_offset);
@@ -142,6 +150,14 @@ impl<'a> CallStack<'a> {
             }
         }
     }
+
+    pub fn value_stack_base(&self) -> u32 {
+        *self.value_stack_bases.last().unwrap_or(&0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.is_64.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -164,13 +180,13 @@ mod tests {
 
         // Push a other few frames before the test frame, just to make the scenario more typical.
         [(1u32, ValueType::I32)].serialize(&mut buffer);
-        call_stack.push_frame(0x11111, 0, 0, &mut vs, &buffer, &mut cursor);
+        call_stack.push_frame(0x11111, 0, &[], &mut vs, &buffer, &mut cursor);
 
         [(2u32, ValueType::I32)].serialize(&mut buffer);
-        call_stack.push_frame(0x22222, 0, 0, &mut vs, &buffer, &mut cursor);
+        call_stack.push_frame(0x22222, 0, &[], &mut vs, &buffer, &mut cursor);
 
         [(3u32, ValueType::I32)].serialize(&mut buffer);
-        call_stack.push_frame(0x33333, 0, 0, &mut vs, &buffer, &mut cursor);
+        call_stack.push_frame(0x33333, 0, &[], &mut vs, &buffer, &mut cursor);
 
         // Create a test call frame with local variables of every type
         [
@@ -180,7 +196,7 @@ mod tests {
             (1u32, ValueType::F64),
         ]
         .serialize(&mut buffer);
-        call_stack.push_frame(RETURN_ADDR, 0, 0, &mut vs, &buffer, &mut cursor);
+        call_stack.push_frame(RETURN_ADDR, 0, &[], &mut vs, &buffer, &mut cursor);
     }
 
     #[test]

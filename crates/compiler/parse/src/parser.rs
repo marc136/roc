@@ -4,11 +4,13 @@ use bumpalo::Bump;
 use roc_region::all::{Loc, Position, Region};
 use Progress::*;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Either<First, Second> {
     First(First),
     Second(Second),
 }
+
+impl<F: Copy, S: Copy> Copy for Either<F, S> {}
 
 pub type ParseResult<'a, Output, Error> = Result<(Progress, Output, State<'a>), (Progress, Error)>;
 
@@ -358,6 +360,7 @@ pub enum EExpr<'a> {
 
     Closure(EClosure<'a>, Position),
     Underscore(Position),
+    Crash(Position),
 
     InParens(EInParens<'a>, Position),
     Record(ERecord<'a>, Position),
@@ -674,6 +677,9 @@ pub enum ETypeTagUnion<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ETypeInParens<'a> {
+    /// e.g. (), which isn't a valid type
+    Empty(Position),
+
     End(Position),
     Open(Position),
     ///
@@ -1326,33 +1332,38 @@ macro_rules! collection {
 
 #[macro_export]
 macro_rules! collection_trailing_sep_e {
-    ($opening_brace:expr, $elem:expr, $delimiter:expr, $closing_brace:expr, $open_problem:expr, $indent_problem:expr, $space_before:expr) => {
-        skip_first!(
-            $opening_brace,
-            |arena, state, min_indent| {
-                let (_, spaces, state) = space0_e($indent_problem)
-                    .parse(arena, state, min_indent)?;
-
-                let (_, (mut parsed_elems, mut final_comments), state) =
-                                and!(
-                                    $crate::parser::trailing_sep_by0(
-                                        $delimiter,
-                                        $crate::blankspace::space0_before_optional_after(
-                                            $elem,
-                                            $indent_problem,
-                                            $indent_problem
-                                        )
-                                    ),
-                                    $crate::parser::reset_min_indent($crate::blankspace::space0_e($indent_problem))
-                                ).parse(arena, state, min_indent)?;
-
-                let (_,_, state) =
-                        if parsed_elems.is_empty() {
-                            one_of_with_error![$open_problem; $closing_brace].parse(arena, state, min_indent)?
-                        } else {
-                            $closing_brace.parse(arena, state, min_indent)?
-                        };
-
+    ($opening_brace:expr, $elem:expr, $delimiter:expr, $closing_brace:expr, $indent_problem:expr, $space_before:expr) => {
+        map_with_arena!(
+            skip_first!(
+                $opening_brace,
+                and!(
+                    and!(
+                        space0_e($indent_problem),
+                        $crate::parser::trailing_sep_by0(
+                            $delimiter,
+                            $crate::blankspace::space0_before_optional_after(
+                                $elem,
+                                $indent_problem,
+                                $indent_problem
+                            )
+                        )
+                    ),
+                    skip_second!(
+                        $crate::parser::reset_min_indent($crate::blankspace::space0_e(
+                            $indent_problem
+                        )),
+                        $closing_brace
+                    )
+                )
+            ),
+            |arena: &'a bumpalo::Bump,
+             ((spaces, mut parsed_elems), mut final_comments): (
+                (
+                    &'a [$crate::ast::CommentOrNewline<'a>],
+                    bumpalo::collections::vec::Vec<'a, Loc<_>>
+                ),
+                &'a [$crate::ast::CommentOrNewline<'a>]
+            )| {
                 if !spaces.is_empty() {
                     if let Some(first) = parsed_elems.first_mut() {
                         first.value = $space_before(arena.alloc(first.value), spaces)
@@ -1362,12 +1373,11 @@ macro_rules! collection_trailing_sep_e {
                     }
                 }
 
-                let collection = $crate::ast::Collection::with_items_and_comments(
+                $crate::ast::Collection::with_items_and_comments(
                     arena,
                     parsed_elems.into_bump_slice(),
-                    final_comments);
-
-                Ok((MadeProgress, collection, state))
+                    final_comments,
+                )
             }
         )
     };
@@ -1786,7 +1796,7 @@ macro_rules! one_or_more {
         move |arena, state: State<'a>, min_indent: u32| {
             use bumpalo::collections::Vec;
 
-            match $parser.parse(arena, state, min_indent) {
+            match $parser.parse(arena, state.clone(), min_indent) {
                 Ok((_, first_output, next_state)) => {
                     let mut state = next_state;
                     let mut buf = Vec::with_capacity_in(1, arena);
@@ -1804,14 +1814,12 @@ macro_rules! one_or_more {
                                 return Ok((MadeProgress, buf, old_state));
                             }
                             Err((MadeProgress, fail)) => {
-                                return Err((MadeProgress, fail, old_state));
+                                return Err((MadeProgress, fail));
                             }
                         }
                     }
                 }
-                Err((progress, _, new_state)) => {
-                    Err((progress, $to_error(new_state.pos), new_state))
-                }
+                Err((progress, _)) => Err((progress, $to_error(state.pos()))),
             }
         }
     };

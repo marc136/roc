@@ -666,6 +666,7 @@ impl<'a> RemoveSpaces<'a> for Expr<'a> {
                 arena.alloc(a.remove_spaces(arena)),
                 arena.alloc(b.remove_spaces(arena)),
             ),
+            Expr::Crash => Expr::Crash,
             Expr::Defs(a, b) => {
                 let mut defs = a.clone();
                 defs.space_before = vec![Default::default(); defs.len()];
@@ -787,6 +788,10 @@ impl<'a> RemoveSpaces<'a> for TypeAnnotation<'a> {
                     vars: vars.remove_spaces(arena),
                 },
             ),
+            TypeAnnotation::Tuple { fields, ext } => TypeAnnotation::Tuple {
+                fields: fields.remove_spaces(arena),
+                ext: ext.remove_spaces(arena),
+            },
             TypeAnnotation::Record { fields, ext } => TypeAnnotation::Record {
                 fields: fields.remove_spaces(arena),
                 ext: ext.remove_spaces(arena),

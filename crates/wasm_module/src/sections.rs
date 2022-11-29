@@ -1,4 +1,5 @@
 use std::fmt::{Debug, Formatter};
+use std::io::Write;
 
 use bumpalo::collections::vec::Vec;
 use bumpalo::Bump;
@@ -257,10 +258,11 @@ impl<'a> TypeSection<'a> {
         self.bytes.is_empty()
     }
 
-    pub fn look_up_arg_count(&self, sig_index: u32) -> u32 {
+    pub fn look_up_arg_type_bytes(&self, sig_index: u32) -> &[u8] {
         let mut offset = self.offsets[sig_index as usize];
         offset += 1; // separator
-        u32::parse((), &self.bytes, &mut offset).unwrap()
+        let count = u32::parse((), &self.bytes, &mut offset).unwrap() as usize;
+        &self.bytes[offset..][..count]
     }
 }
 
@@ -739,6 +741,9 @@ impl SkipBytes for Limits {
 
 impl Parse<()> for Limits {
     fn parse(_: (), bytes: &[u8], cursor: &mut usize) -> Result<Self, ParseError> {
+        if *cursor >= bytes.len() {
+            return Ok(Limits::Min(0));
+        }
         let variant_id = bytes[*cursor];
         *cursor += 1;
 
@@ -785,6 +790,16 @@ impl<'a> MemorySection<'a> {
             Limits::Min(pages) | Limits::MinMax(pages, _) => pages,
         };
         Ok(min_pages * MemorySection::PAGE_SIZE)
+    }
+
+    pub fn max_bytes(&self) -> Result<Option<u32>, ParseError> {
+        let mut cursor = 0;
+        let memory_limits = Limits::parse((), &self.bytes, &mut cursor)?;
+        let bytes = match memory_limits {
+            Limits::Min(_) => None,
+            Limits::MinMax(_, pages) => Some(pages * MemorySection::PAGE_SIZE),
+        };
+        Ok(bytes)
     }
 }
 
@@ -1150,6 +1165,13 @@ pub struct ElementSegment<'a> {
 }
 
 impl<'a> ElementSegment<'a> {
+    pub fn new(arena: &'a Bump) -> Self {
+        ElementSegment {
+            offset: ConstExpr::I32(0),
+            fn_indices: Vec::new_in(arena),
+        }
+    }
+
     fn size(&self) -> usize {
         let variant_id = 1;
         let constexpr_opcode = 1;
@@ -1252,6 +1274,14 @@ impl<'a> ElementSection<'a> {
     pub fn is_empty(&self) -> bool {
         self.segments.iter().all(|seg| seg.fn_indices.is_empty())
     }
+
+    /// Look up a "function pointer" (element index) and return the function index.
+    pub fn lookup(&self, element_index: u32) -> Option<u32> {
+        self.segments.iter().find_map(|seg| {
+            let adjusted_index = element_index as usize - seg.offset.unwrap_i32() as usize;
+            seg.fn_indices.get(adjusted_index).copied()
+        })
+    }
 }
 
 impl<'a> Parse<&'a Bump> for ElementSection<'a> {
@@ -1299,6 +1329,7 @@ impl<'a> Serialize for ElementSection<'a> {
 #[derive(Debug)]
 pub struct CodeSection<'a> {
     pub function_count: u32,
+    pub section_offset: u32,
     pub bytes: Vec<'a, u8>,
     /// The start of each function
     pub function_offsets: Vec<'a, u32>,
@@ -1310,6 +1341,7 @@ impl<'a> CodeSection<'a> {
     pub fn new(arena: &'a Bump) -> Self {
         CodeSection {
             function_count: 0,
+            section_offset: 0,
             bytes: Vec::new_in(arena),
             function_offsets: Vec::new_in(arena),
             dead_import_dummy_count: 0,
@@ -1357,6 +1389,7 @@ impl<'a> CodeSection<'a> {
 
         Ok(CodeSection {
             function_count,
+            section_offset: section_body_start as u32,
             bytes,
             function_offsets,
             dead_import_dummy_count: 0,
@@ -1484,10 +1517,40 @@ impl<'a> DataSection<'a> {
         segment.serialize(&mut self.bytes);
         index
     }
+
+    pub fn load_into(&self, memory: &mut [u8]) -> Result<(), String> {
+        let mut cursor = 0;
+        for _ in 0..self.count {
+            let mode =
+                DataMode::parse((), &self.bytes, &mut cursor).map_err(|e| format!("{:?}", e))?;
+            let start = match mode {
+                DataMode::Active {
+                    offset: ConstExpr::I32(addr),
+                } => addr as usize,
+                _ => {
+                    continue;
+                }
+            };
+            let len32 = u32::parse((), &self.bytes, &mut cursor).map_err(|e| format!("{:?}", e))?;
+            let len = len32 as usize;
+            let mut target_slice = &mut memory[start..][..len];
+            target_slice
+                .write(&self.bytes[cursor..][..len])
+                .map_err(|e| format!("{:?}", e))?;
+        }
+        Ok(())
+    }
 }
 
 impl<'a> Parse<&'a Bump> for DataSection<'a> {
     fn parse(arena: &'a Bump, module_bytes: &[u8], cursor: &mut usize) -> Result<Self, ParseError> {
+        if *cursor >= module_bytes.len() {
+            return Ok(DataSection {
+                end_addr: 0,
+                count: 0,
+                bytes: Vec::<u8>::new_in(arena),
+            });
+        }
         let (count, range) = parse_section(Self::ID, module_bytes, cursor)?;
 
         let end = range.end;

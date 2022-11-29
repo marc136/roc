@@ -196,6 +196,9 @@ pub enum Expr<'a> {
 
     Underscore(&'a str),
 
+    // The "crash" keyword
+    Crash,
+
     // Tags
     Tag(&'a str),
 
@@ -530,6 +533,13 @@ pub enum TypeAnnotation<'a> {
         fields: Collection<'a, Loc<AssignedField<'a, TypeAnnotation<'a>>>>,
         /// The row type variable in an open record, e.g. the `r` in `{ name: Str }r`.
         /// This is None if it's a closed record annotation like `{ name: Str }`.
+        ext: Option<&'a Loc<TypeAnnotation<'a>>>,
+    },
+
+    Tuple {
+        fields: Collection<'a, Loc<TypeAnnotation<'a>>>,
+        /// The row type variable in an open tuple, e.g. the `r` in `( Str, Str )r`.
+        /// This is None if it's a closed tuple annotation like `( Str, Str )`.
         ext: Option<&'a Loc<TypeAnnotation<'a>>>,
     },
 
