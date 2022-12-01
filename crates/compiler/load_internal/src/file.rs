@@ -876,10 +876,11 @@ enum PlatformPath<'a> {
 }
 
 #[derive(Debug)]
-struct PlatformData {
+struct PlatformData<'a> {
     module_id: ModuleId,
     provides: Symbol,
     is_prebuilt: bool,
+    exposed_modules: &'a [ModuleId],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -911,7 +912,7 @@ struct State<'a> {
     pub root_id: ModuleId,
     pub root_subs: Option<Subs>,
     pub cache_dir: PathBuf,
-    pub platform_data: Option<PlatformData>,
+    pub platform_data: Option<PlatformData<'a>>,
     pub exposed_types: ExposedByModule,
     pub output_path: Option<&'a str>,
     pub platform_path: PlatformPath<'a>,
@@ -2335,6 +2336,7 @@ fn update<'a>(
                     Platform {
                         main_for_host,
                         config_shorthand,
+                        exposes_ids,
                         ..
                     } => {
                         debug_assert!(matches!(state.platform_data, None));
@@ -2363,6 +2365,7 @@ fn update<'a>(
                             module_id: header.module_id,
                             provides: main_for_host,
                             is_prebuilt,
+                            exposed_modules: exposes_ids,
                         });
                     }
                     Builtin { .. } | Interface => {
@@ -4245,6 +4248,7 @@ fn send_header_two<'a>(
     info: PlatformHeaderInfo<'a>,
     parse_state: roc_parse::state::State<'a>,
     module_ids: Arc<Mutex<PackageModuleIds<'a>>>,
+    exposes_ids: &'a [ModuleId],
     ident_ids_by_module: SharedIdentIdsByModule,
     module_timing: ModuleTiming,
 ) -> (ModuleId, Msg<'a>) {
@@ -4451,6 +4455,7 @@ fn send_header_two<'a>(
         // A config_shorthand of "" should be fine
         config_shorthand: opt_shorthand.unwrap_or_default(),
         platform_main_type: requires[0].value,
+        exposes_ids,
         main_for_host,
     };
 
@@ -4954,10 +4959,31 @@ fn fabricate_platform_module<'a>(
         imports: unspace(arena, header.imports.item.items),
     };
 
+    let mut exposes_ids =
+        bumpalo::collections::Vec::with_capacity_in(header.exposes.item.items.len(), arena);
+
+    {
+        // Lock just long enough to perform the minimal operations necessary.
+        let mut module_ids = (*module_ids).lock();
+        let mut ident_ids_by_module = (*ident_ids_by_module).lock();
+
+        // TODO can we "iterate unspaced" instead of calling unspace here?
+        for entry in unspace(arena, header.exposes.item.items) {
+            let module_id =
+                module_ids.get_or_insert(&PQModuleName::Unqualified(entry.value.as_str().into()));
+
+            // Ensure this module has an entry in the ident_ids_by_module map.
+            ident_ids_by_module.get_or_insert(module_id);
+
+            exposes_ids.push(module_id);
+        }
+    }
+
     send_header_two(
         info,
         parse_state,
         module_ids,
+        exposes_ids.into_bump_slice(),
         ident_ids_by_module,
         module_timing,
     )

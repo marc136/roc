@@ -31,6 +31,7 @@ pub enum HeaderFor<'a> {
         platform_main_type: TypedIdent<'a>,
         /// provided symbol to host (commonly `mainForHost`)
         main_for_host: roc_module::symbol::Symbol,
+        exposes_ids: &'a [roc_module::symbol::ModuleId],
     },
     Interface,
 }
