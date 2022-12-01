@@ -362,6 +362,12 @@ fn start_phase<'a>(
                     state.cached_types.lock().contains_key(&module_id)
                 };
 
+                let exposed_module_ids = state
+                    .platform_data
+                    .as_ref()
+                    .map(|data| data.exposed_modules)
+                    .unwrap_or_default();
+
                 BuildTask::CanonicalizeAndConstrain {
                     parsed,
                     dep_idents,
@@ -370,6 +376,7 @@ fn start_phase<'a>(
                     aliases,
                     abilities_store,
                     skip_constraint_gen,
+                    exposed_module_ids,
                 }
             }
 
@@ -1112,6 +1119,7 @@ enum BuildTask<'a> {
         exposed_symbols: VecSet<Symbol>,
         aliases: MutMap<Symbol, Alias>,
         abilities_store: PendingAbilitiesStore,
+        exposed_module_ids: &'a [ModuleId],
         skip_constraint_gen: bool,
     },
     Solve {
@@ -4315,7 +4323,7 @@ fn send_header_two<'a>(
         };
         home = module_ids.get_or_insert(&name);
 
-        // Ensure this module has an entry in the exposed_ident_ids map.
+        // Ensure this module has an entry in the ident_ids_by_module map.
         ident_ids_by_module.get_or_insert(home);
 
         // For each of our imports, add an entry to deps_by_name
@@ -5000,6 +5008,7 @@ fn canonicalize_and_constrain<'a>(
     imported_abilities_state: PendingAbilitiesStore,
     parsed: ParsedModule<'a>,
     skip_constraint_gen: bool,
+    exposed_module_ids: &[ModuleId],
 ) -> CanAndCon {
     let canonicalize_start = Instant::now();
 
@@ -5060,16 +5069,23 @@ fn canonicalize_and_constrain<'a>(
     let module_docs = match module_name {
         ModuleNameEnum::Platform => None,
         ModuleNameEnum::App(_) => None,
-        ModuleNameEnum::Interface(name) | ModuleNameEnum::Hosted(name) => {
+        ModuleNameEnum::Interface(name) | ModuleNameEnum::Hosted(name)
+            if exposed_module_ids.contains(&parsed.module_id) =>
+        {
             let mut scope = module_output.scope.clone();
             scope.add_docs_imports();
             let docs = crate::docs::generate_module_docs(
                 scope,
                 name.as_str().into(),
                 &parsed_defs_for_docs,
+                exposed_module_ids,
             );
 
             Some(docs)
+        }
+        ModuleNameEnum::Interface(_) | ModuleNameEnum::Hosted(_) => {
+            // This module isn't exposed by the platform, so don't generate docs for it!
+            None
         }
     };
 
@@ -5910,6 +5926,7 @@ fn run_task<'a>(
             aliases,
             abilities_store,
             skip_constraint_gen,
+            exposed_module_ids,
         } => {
             let can_and_con = canonicalize_and_constrain(
                 arena,
@@ -5920,6 +5937,7 @@ fn run_task<'a>(
                 abilities_store,
                 parsed,
                 skip_constraint_gen,
+                exposed_module_ids,
             );
 
             Ok(Msg::CanonicalizedAndConstrained(can_and_con))
