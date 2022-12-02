@@ -4337,8 +4337,12 @@ impl StorageSubs {
         match content {
             FlexVar(opt_name) => FlexVar(*opt_name),
             RigidVar(name) => RigidVar(*name),
-            FlexAbleVar(opt_name, ability) => FlexAbleVar(*opt_name, *ability),
-            RigidAbleVar(name, ability) => RigidAbleVar(*name, *ability),
+            FlexAbleVar(opt_name, abilities) => {
+                FlexAbleVar(*opt_name, Self::offset_ability_slice(offsets, *abilities))
+            }
+            RigidAbleVar(name, abilities) => {
+                RigidAbleVar(*name, Self::offset_ability_slice(offsets, *abilities))
+            }
             RecursionVar {
                 structure,
                 opt_name,
@@ -4383,6 +4387,15 @@ impl StorageSubs {
         union_tags.values_start += offsets.variable_slices;
 
         union_tags
+    }
+
+    fn offset_ability_slice(
+        offsets: &StorageSubsOffsets,
+        mut ability_names: SubsSlice<Symbol>,
+    ) -> SubsSlice<Symbol> {
+        ability_names.start += offsets.symbol_names;
+
+        ability_names
     }
 
     fn offset_lambda_set(
